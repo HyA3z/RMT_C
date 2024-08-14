@@ -9,15 +9,15 @@ CUBLAS_WORKSPACE_CONFIG=:4096:2
 CUDA_LAUNCH_BLOCKING=1
 
 MODEL_TYPE=decoder
-MEMORY_CELL=modeling_rmt.language_modeling:MemoryCell
-RECURRENT_WRAPPER=modeling_rmt.language_modeling:RecurrentWrapper
+MEMORY_CELL=modeling_rmt.language_modeling_c1:MemoryCell
+RECURRENT_WRAPPER=modeling_rmt.language_modeling_c1:RecurrentWrapper
 BACKBONE_CLS=transformers:AutoModelForCausalLM
 NOISE_DATASET=pg19
 METRIC=exact_match
 
 MODEL_NAME=gpt2  # backbone model
 
-ITERS=20000
+ITERS=5000
 TBS=16
 
 for TASK_DATASET in qa1_single-supporting-fact
@@ -29,8 +29,8 @@ do
 for SEGMENT_SIZE in 512
 do # size of one segment in tokens
 
-MAX_N_SEGMENTSS=(0 1 2 4)
-BSS=(32 16 4 2)
+MAX_N_SEGMENTSS=(0 1 2)
+BSS=(32 16 4)
 
 for (( j=2; j<${#MAX_N_SEGMENTSS[@]}; j++ ))
 do
@@ -74,11 +74,11 @@ echo RUNNING: TASK_DATASET $TASK_DATASET MEMORY_SIZE $MEMORY_SIZE SEGMENT_SIZE $
 echo SAMPLE_SIZE $SAMPLE_SIZE MODEL_NAME $MODEL_NAME  LR $LR N $N
 echo gradient accumulation steps $GRAD_ACC_STEPS
 
-accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt.py \
+accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_finetuning_babilong_rmt_c.py \
         --task_dataset $TASK_DATASET \
         --noise_dataset $NOISE_DATASET \
         --babi_path /root/recurrent-memory-transformer-babilong/data/tasks_1-20_v1-2/en-10k \
-        --model_path /root/autodl-tmp/rmt/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd${LR}_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_N_SEGMENTS}-${MAX_N_SEGMENTS}/run_$N \
+        --model_path /root/autodl-tmp/rmt_c_compfromseg1_layer4/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd${LR}_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_N_SEGMENTS}-${MAX_N_SEGMENTS}/run_$N \
         --model_cpt /root/autodl-tmp/rmt/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd${LR}_${SRC_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_SRC_N_SEGMENTS}-${SRC_N_SEGMENTS}/run_$N/model_best \
         --from_pretrained $MODEL_NAME \
         --model_type $MODEL_TYPE \

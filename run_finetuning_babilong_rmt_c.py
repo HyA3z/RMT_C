@@ -329,7 +329,26 @@ if __name__ == '__main__':
         recurrent_wrapper_cls = get_cls_by_name(args.recurrent_wrapper_cls)
         logger.info(f'Wrapping in: {memory_cell_cls} and {recurrent_wrapper_cls}')
         
-        cell = memory_cell_cls(model, args.num_mem_tokens)
+        # -------------------------------------------------------------------------------------
+        # Define compress module 
+        from transformers import GPT2Config, AutoModel, GPT2Model
+        from torch import nn
+        config = GPT2Config(
+            n_layer=4,
+        )
+        # compress_module = GPT2Model(config)
+        compress_module = GPT2Model.from_pretrained('gpt2', config=config, ignore_mismatched_sizes=True)
+        model_size = sum(t.numel() for t in compress_module.parameters())
+        print(f"Compress_module size: {model_size/1000**2 - 50257 * 768/1000**2:.1f}M parameters")
+
+        # Frozen compress_module wte and GPT-2
+        compress_module.wte.requires_grad_(False) # Let compress module use same wte with main model
+        # for param in model.parameters():
+        #     param.requires_grad_(False)
+        
+        # -----------------------------------------------------------------------------------------------
+
+        cell = memory_cell_cls(model, args.num_mem_tokens, compress_module)
         if args.segment_alignment not in {None, 'left'}:
             logger.info(f"Using custom segment alignment: {args.segment_alignment}")
         
@@ -342,7 +361,10 @@ if __name__ == '__main__':
                                       segment_alignment=args.segment_alignment,
                                       k2=args.k2,
         )
-                                    
+        # print(model)
+        # print(model.memory_cell.model.transformer.wte.weight)
+        # print(model.memory_cell.model.transformer.h[0].attn.c_attn.weight)
+        # print(model.memory_cell.compress_module.h[0].attn.c_attn.weight)
 
         ## load cpt of rmt
         if args.model_cpt:
@@ -350,6 +372,34 @@ if __name__ == '__main__':
             cpt = torch.load(model_cpt, map_location='cpu')
             model.load_state_dict(cpt, strict=False)
             logger.info(f'Loaded RMT state dict from: {args.model_cpt}')
+        
+        # ---------------------------------------------------------------------------------------------
+        def copy(source_model, target_model, num_layers):
+            # Get parameter names for the source model
+            source_params = {name: param for name, param in source_model.named_parameters()}
+            
+            # Iterate through layers
+            for i in range(num_layers):
+                source_block = source_model.h[i]
+                target_block = target_model.h[i]
+                
+                # Iterate through parameters of the current block
+                for name, param in target_block.named_parameters():
+                    # Construct the name of the corresponding parameter in the source model
+                    source_name = f"h.{i}.{name}"
+                    
+                    if source_name in source_params:
+                        # Copy data from source to target
+                        param.data.copy_(source_params[source_name].data)
+
+        source_model = model.memory_cell.model.transformer
+        target_model = model.memory_cell.compress_module
+        copy(source_model, target_model, 4)
+
+        # print(model.memory_cell.model.transformer.wte.weight)
+        # print(model.memory_cell.model.transformer.h[0].attn.c_attn.weight)
+        # print(model.memory_cell.compress_module.h[0].attn.c_attn.weight)
+        # exit()   
 
     if args.freeze_model_weights:
         for n, p in model.named_parameters():
