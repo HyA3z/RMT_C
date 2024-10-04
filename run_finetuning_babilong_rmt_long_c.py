@@ -274,7 +274,7 @@ if __name__ == '__main__':
 
         
         # torch.set_printoptions(threshold=torch.inf)
-        # print(len(input_ids[0]))
+        # print(input_ids[0])
         # exit()
 
         attention_mask = [torch.ones_like(b, dtype=int) for b in input_ids]
@@ -466,11 +466,6 @@ if __name__ == '__main__':
         for name, param in model.named_parameters():
             param.requires_grad_(False)
         
-
-        # for name, param in compress_module.named_parameters():
-        #     if 'wte' not in name and 'wpe' not in name and 'ln_f.weight' not in name and 'ln_f.bias' not in name:
-        #         param.requires_grad_(True)
-
         print('-------------------Base_Model-------------------------------------')
         for name, param in model.named_parameters():
             if param.requires_grad == True:
@@ -560,7 +555,10 @@ if __name__ == '__main__':
                 if '<|endoftext|>' in l:
                     eos_ind = predicted_labels[i].index('<|endoftext|>')
                     predicted_labels[i] = predicted_labels[i][:eos_ind]
-
+            # ---------------------------------------
+            print(batch['target_text'])
+            print(predicted_labels)
+            # ---------------------------------------
             data['num_correct'] = [np.sum([text == pred for text, pred in zip (batch['target_text'], predicted_labels)])]
             data['num_total'] = [len(predicted_labels)]
             
