@@ -404,6 +404,10 @@ if __name__ == '__main__':
                 if '<|endoftext|>' in l:
                     eos_ind = predicted_labels[i].index('<|endoftext|>')
                     predicted_labels[i] = predicted_labels[i][:eos_ind]
+            # # ---------------------------------------
+            # print(batch['target_text'])
+            # print(predicted_labels)
+            # # ---------------------------------------
 
             data['num_correct'] = [np.sum([text == pred for text, pred in zip (batch['target_text'], predicted_labels)])]
             data['num_total'] = [len(predicted_labels)]
