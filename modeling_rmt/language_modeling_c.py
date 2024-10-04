@@ -8,8 +8,10 @@ class MemoryCell(torch.nn.Module):
         super().__init__()
         self.model = base_model
         self.create_memory(num_mem_tokens)
-        # define compress module
+        # Add Compress Module
         self.compress_module = compress_module
+        # # # Add Transit Module
+        # self.transit_module = transit_module
 
     def create_memory(self, num_mem_tokens):
         self.num_mem_tokens = num_mem_tokens
@@ -18,93 +20,94 @@ class MemoryCell(torch.nn.Module):
         memory_weights = torch.randn((num_mem_tokens, memory_dim)) * embeddings.weight.data.std()
         self.register_parameter('memory', torch.nn.Parameter(memory_weights, requires_grad=True))
 
+
     def set_memory(self, input_shape):
         memory = self.memory.repeat(input_shape[0], 1, 1)
         return memory
 
-    def forward(self, input_ids, memory_state=None, fi_la_seg=None, **kwargs):
+    def forward(self, input_ids, memory_state=None, last_seg=None, **kwargs):
         if memory_state is None:
             memory_state = self.set_memory(input_ids.shape)
 
-        '''fi_la_seg ----> 0 / 1 / 2
-        0 ---> first seg  |  1 ---> mid seg  |  2 ---> last seg
-        '''
-        # For Language Model(Base Model)
-        seg_kwargs_b = self.process_input(input_ids, memory_state, idx = 0, fi_la_seg = fi_la_seg, **kwargs)
-        out_b = self.model(**seg_kwargs_b)
+        seg_kwargs = self.process_input(input_ids, memory_state, last_seg=last_seg, **kwargs)
 
-        # For Compress module
-        seg_kwargs_c = self.process_input(input_ids, memory_state, idx = 1, **kwargs)
-        out_c = self.compress_module(**seg_kwargs_c)
+        if last_seg:
+            out = self.model(**seg_kwargs)
+            out = self.process_output(out, last_seg, **kwargs)
+            return out
+        else:
+            out = self.compress_module(**seg_kwargs)
+            new_memory_state = self.process_output(out, last_seg, **kwargs)
+            return new_memory_state
 
-        out, new_memory_state = self.process_output(out_b, out_c, fi_la_seg, **kwargs)
-
-        return out, new_memory_state
     
-    def generate(self, input_ids, memory_state, attention_mask=None, **generate_kwargs):
-        if memory_state is None:
-            memory_state = self.set_memory(input_ids.shape)
+    # def generate(self, input_ids, memory_state, attention_mask=None, **generate_kwargs):
+    #     if memory_state is None:
+    #         memory_state = self.set_memory(input_ids.shape)
 
-        seg_kwargs = self.process_input(input_ids, memory_state, attention_mask=attention_mask, write_mem=False)
-        out = self.model.generate(inputs_embeds=seg_kwargs['inputs_embeds'], attention_mask=seg_kwargs['attention_mask'], **generate_kwargs)
-        return out
+    #     seg_kwargs = self.process_input(input_ids, memory_state, attention_mask=attention_mask, write_mem=False)
+    #     out = self.model.generate(inputs_embeds=seg_kwargs['inputs_embeds'], attention_mask=seg_kwargs['attention_mask'], **generate_kwargs)
+    #     return out
 
-    def process_input(self, input_ids, memory_state, idx=None, fi_la_seg=None, **kwargs):
+    def process_input(self, input_ids, memory_state, last_seg, **kwargs):
         seg_kwargs = dict(**kwargs)
 
         inputs_embeds = kwargs.get('inputs_embeds')
         if inputs_embeds is None:
             inputs_embeds = self.model.get_input_embeddings()(input_ids)
-        
-        if idx == 0:
-            inputs_embeds = inputs_embeds if fi_la_seg == 0 else torch.cat([memory_state, inputs_embeds], dim=1)
+
+        ''' if last_seg = True ----> use GPT-2 read memory tokens and generate the result, 
+            if last_seg = False ----> use compress module to compress information to memory tokens'''
+
+        if last_seg:
+            # Memory state pass transit module before Read
+            # memory_state = memory_state.contiguous()
+            # memory_state = self.transit_module(memory_state)
+            inputs_embeds = torch.cat([memory_state, inputs_embeds], dim=1)
         else:
+            # Option 1
+            # inputs_embeds = torch.cat([memory_state, inputs_embeds, memory_state], dim=1)
+
+            # Option 2
             inputs_embeds = torch.cat([inputs_embeds, memory_state], dim=1)
 
         seg_kwargs['input_ids'] = None
         seg_kwargs['inputs_embeds'] = inputs_embeds
         if kwargs.get('attention_mask') is not None:
-            if idx == 0 and fi_la_seg == 0:
-                seg_kwargs['attention_mask'] = kwargs['attention_mask']
-            else:
-                seg_kwargs['attention_mask'] = self.pad_attention_mask(kwargs['attention_mask'], inputs_embeds.shape, idx)
+            seg_kwargs['attention_mask'] = self.pad_attention_mask(kwargs['attention_mask'], inputs_embeds.shape, last_seg)
         seg_kwargs['output_hidden_states'] = True
         return seg_kwargs
     
-    def pad_attention_mask(self, attention_mask, shape, idx):
+    def pad_attention_mask(self, attention_mask, shape, last_seg):
         if self.num_mem_tokens in {0, None}:
             return attention_mask
         else:
             mask = torch.ones(*shape[:2], dtype=torch.int64).to(attention_mask.device)
-            if idx == 0:
+            if last_seg:
                 mask[:, self.num_mem_tokens:] = attention_mask
             else:
+                # Option 1: Add memory_state at the begining and the last
+                # mask[:, self.num_mem_tokens:-self.num_mem_tokens] = attention_mask
+
+                # Option 2: Add memory_state only at the last
                 mask[:, :-self.num_mem_tokens] = attention_mask
             return mask
     
-    def process_output(self, model_outputs, compress_outputs, fi_la_seg, **kwargs):
-        if self.num_mem_tokens not in {0, None}:
-            out = CausalLMOutputWithCrossAttentions()
+    def process_output(self, model_outputs, last_seg, **kwargs):
+        out = CausalLMOutputWithCrossAttentions()
+        if not last_seg:
+            memory_state = model_outputs.hidden_states[-1][:, -self.num_mem_tokens:]
+            return memory_state
 
-            # Get memory state from compress module output
-            memory_state = compress_outputs.hidden_states[-1][:, -self.num_mem_tokens:]
-            if fi_la_seg == 0:
-                out['logits'] = model_outputs.logits
-            else:
-                out['logits'] = model_outputs.logits[:, self.num_mem_tokens:]
+        out['logits'] = model_outputs.logits[:, self.num_mem_tokens:]
+
+        if kwargs.get('output_hidden_states'):
+            out['hidden_states'] = [lh[:, self.num_mem_tokens:] for lh in model_outputs.hidden_states]
+
+        if kwargs.get('output_attentions'):
+            out['attentions'] = model_outputs['attentions']
             
-            if kwargs.get('output_hidden_states'):
-                if fi_la_seg == 0:
-                    out['hidden_states'] = [lh for lh in model_outputs.hidden_states]
-                else:
-                    out['hidden_states'] = [lh[:, self.num_mem_tokens:] for lh in model_outputs.hidden_states]
-            if kwargs.get('output_attentions'):
-                out['attentions'] = model_outputs['attentions']
-        else:
-            memory_state = None
-            out = model_outputs
-            
-        return out, memory_state 
+        return out
 
 
 import random
@@ -117,16 +120,17 @@ class RecurrentWrapper(torch.nn.Module):
     def forward(self, input_ids, labels=None, labels_mask=None, inputs_embeds=None, attention_mask=None, output_attentions=None, output_hidden_states=None):
         memory_state = None
         segmented = self.segment(input_ids=input_ids, inputs_embeds=inputs_embeds, attention_mask=attention_mask)
-
-        cell_outputs = []
         seg_len = len(segmented) # segment_length
-        # print('\n\n\nForward: ', [s['input_ids'].shape for s in segmented])
-        for seg_num, segment in enumerate(segmented):
-            fi_la_seg = 0 if seg_num == 0 else 2 if seg_num == seg_len - 1 else 1
 
-            cell_out, memory_state = self.memory_cell(**segment, memory_state=memory_state, fi_la_seg=fi_la_seg, output_hidden_states=True)
-            cell_outputs.append(cell_out)
-            memory_state = self.manage_gradients(memory_state, seg_num)
+        for seg_num, segment in enumerate(segmented):
+            last_seg = True if seg_num == seg_len - 1 else False
+
+            if last_seg:
+                cell_out = self.memory_cell(**segment, memory_state=memory_state, output_hidden_states=True, last_seg=last_seg)
+            else:
+                memory_state = self.memory_cell(**segment, memory_state=memory_state, output_hidden_states=True, last_seg=last_seg)
+                memory_state = self.manage_gradients(memory_state, seg_num)
+        cell_outputs = [cell_out]
 
         out = self.process_outputs(cell_outputs, labels=labels, 
                                    labels_mask=labels_mask,
@@ -134,18 +138,18 @@ class RecurrentWrapper(torch.nn.Module):
                                    output_hidden_states=output_hidden_states)
         return out
     
-    def generate(self, input_ids, attention_mask=None, **generate_kwargs):
-        memory_state = None
-        segmented = self.segment(input_ids=input_ids, attention_mask=attention_mask)
+    # def generate(self, input_ids, attention_mask=None, **generate_kwargs):
+    #     memory_state = None
+    #     segmented = self.segment(input_ids=input_ids, attention_mask=attention_mask)
 
-        # print('\n\n\nGenerate: ', [s['input_ids'].shape for s in segmented])
-        for seg_num, segment in enumerate(segmented[:-1]):
-            cell_out, memory_state = self.memory_cell(**segment, memory_state=memory_state, output_hidden_states=True)
+    #     # print('\n\n\nGenerate: ', [s['input_ids'].shape for s in segmented])
+    #     for seg_num, segment in enumerate(segmented[:-1]):
+    #         cell_out, memory_state = self.memory_cell(**segment, memory_state=memory_state, output_hidden_states=True)
 
-        final_segment = segmented[-1]
-        out = self.memory_cell.generate(**final_segment, memory_state=memory_state, **generate_kwargs)
+    #     final_segment = segmented[-1]
+    #     out = self.memory_cell.generate(**final_segment, memory_state=memory_state, **generate_kwargs)
 
-        return out
+    #     return out
 
     def segment(self, **kwargs):
         segments = []
@@ -183,19 +187,21 @@ class RecurrentWrapper(torch.nn.Module):
 
         labels = kwargs.get('labels')
         if labels is not None:
-            shift_labels = labels[..., 1:].contiguous()
+            shift_labels = labels[..., 1:]
             shift_logits = full_logits[..., :-1, :].contiguous()
+            shift_labels = shift_labels[:, -shift_logits.shape[1]:].contiguous()
             flat_labels = shift_labels.view(-1)
             flat_logits = shift_logits.view(-1, shift_logits.size(-1))
             
             loss_fct = CrossEntropyLoss()
             labels_mask = kwargs.get('labels_mask')
             if labels_mask is not None:
-                shift_mask = labels_mask[..., :-1].contiguous()
+                shift_mask = labels_mask[..., :-1]
+                shift_mask = shift_mask[:, -shift_logits.shape[1]:].contiguous()
 
                 flat_labels = flat_labels[shift_mask.view(-1)]
                 flat_logits = flat_logits[shift_mask.view(-1)]
-     
+
             out['loss'] = loss_fct(flat_logits, flat_labels)
             if out['loss'] is None:
                 raise ValueError
