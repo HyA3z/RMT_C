@@ -169,8 +169,7 @@ if __name__ == '__main__':
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.from_pretrained)
 
-    max_tokens = 1e4
-    tokenizer.model_max_length = max_tokens
+    tokenizer.model_max_length = 1e4
 
     # Prepare datasets
     logger.info(f'preparing dataset for {args.task_dataset}')
@@ -232,6 +231,12 @@ if __name__ == '__main__':
     gen_token = tokenizer.encode('GEN')[0]
     eos_token = tokenizer.eos_token_id
 
+    # for i in test_dataset:
+    #     if len(i['input_tokens']) != 2028:  
+    #         print(len(i['input_tokens']))
+    # print('---------------------------------')
+    # exit()
+
     def collate_fn(batch):
         targets = [torch.tensor(b['target_tokens']) for b in batch]
         input_ids = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token] + b['target_tokens'] + [eos_token]) for b in batch]
@@ -258,6 +263,7 @@ if __name__ == '__main__':
 
     # train_dataset, valid_dataset, test_dataset = dataset["train"], dataset["validation"], dataset["test"]
     kwargs = {'pin_memory': True, 'num_workers': args.data_n_workers, 'collate_fn': collate_fn}
+
     per_worker_batch_size = args.batch_size * args.gradient_accumulation_steps
     train_sampler = DistributedSampler(train_dataset, rank=accelerator.process_index,
                                        num_replicas=accelerator.num_processes, shuffle=True, drop_last=True,
