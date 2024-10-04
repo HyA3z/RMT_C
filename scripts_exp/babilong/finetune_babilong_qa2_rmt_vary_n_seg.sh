@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# CUDA_VISIBLE_DEVICES=1,2 NP=2 ./finetune_babilong_baseline.sh
+CUDA_VISIBLE_DEVICES=1
+NP=1
+#  ./finetune_babilong_baseline.sh
 set -e
 cd ../..
 
@@ -18,9 +20,9 @@ MODEL_NAME=gpt2  # backbone model
 for TASK_DATASET in qa2_two-supporting-facts
 do
 
-ITERS=2000
+ITERS=4000
 TBS=64
-INIT_BS=64
+INIT_BS=16
 
 for LR in 1e-05
 do
@@ -36,7 +38,7 @@ do
 
 SAMPLE_SIZE=$((MAX_N_SEGMENTS*SEGMENT_SIZE)) # length of task sample in tokens
 BS=$(((INIT_BS/MAX_N_SEGMENTS)))
-
+MAX_N_FACTS=$((SAMPLE_SIZE/8))
 GRAD_ACC_STEPS=$(($TBS/($BS*$NP)))
 SCHEDULER=linear
 
@@ -46,7 +48,7 @@ do
 K2=-1   # BPTT unroll length
 
 NP=$NP
-ACCEL_CONFIG=/home/jovyan/rmt/babilong/accel_configs/accelerate/deepspeed_bf16_tbs${TBS}bs${BS}g${GRAD_ACC_STEPS}c1.0np${NP}.yaml
+ACCEL_CONFIG=/root/recurrent-memory-transformer-babilong/accel_configs/exp/accelerate/deepspeed_bf16_tbs${TBS}bs${BS}g${GRAD_ACC_STEPS}c1.0np${NP}.yaml
 cd accel_configs/
 python create_config.py \
         --bf16 \
@@ -64,8 +66,8 @@ echo gradient accumulation steps $GRAD_ACC_STEPS
 accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29004 run_finetuning_babilong_rmt.py \
         --task_dataset $TASK_DATASET \
         --noise_dataset $NOISE_DATASET \
-        --babi_path /home/jovyan/rmt/babilong/data/tasks_1-20_v1-2/en-10k \
-        --model_path /home/jovyan/rmt/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_0-1/run_$N \
+        --babi_path /root/recurrent-memory-transformer-babilong/data/tasks_1-20_v1-2/en-10k \
+        --model_path /root/autodl-tmp/exp_record/babilong/rmt/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_0-1/run_$N \
         --from_pretrained $MODEL_NAME \
         --model_type $MODEL_TYPE \
         --memory_cell_cls $MEMORY_CELL \
@@ -79,7 +81,6 @@ accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29004 run_fine
         --batch_size $BS --gradient_accumulation_steps $(($TBS/($BS*$NP))) \
         --num_training_steps $((ITERS*2)) \
         --iters $ITERS \
-        --use_generate_on_valid \
         --save_best \
         --k2 $K2 \
         --optimizer AdamW  --weight_decay 0.01 \
@@ -88,7 +89,7 @@ accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29004 run_fine
         --log_interval $(($ITERS/100)) --valid_interval $(($ITERS/20)) \
         --optimize_metric $METRIC --optimize_mode max \
         --show_valid_examples 5 \
-        --early_stopping_patience 15 \
+        --early_stopping_patience 5 \
         --seed $(($N+42)) \
         --clip_grad_norm 1.0
         
