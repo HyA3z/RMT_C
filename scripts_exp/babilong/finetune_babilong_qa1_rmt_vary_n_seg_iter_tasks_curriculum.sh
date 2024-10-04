@@ -17,8 +17,8 @@ METRIC=exact_match
 
 MODEL_NAME=gpt2  # backbone model
 
-ITERS=20000
-TBS=16
+ITERS=10000
+TBS=32
 
 for TASK_DATASET in qa1_single-supporting-fact
 do
@@ -29,10 +29,10 @@ do
 for SEGMENT_SIZE in 512
 do # size of one segment in tokens
 
-MAX_N_SEGMENTSS=(0 1 2 4)
-BSS=(32 16 4 2)
+MAX_N_SEGMENTSS=(0 1 2 4 6 8 16 32)
+BSS=(32 32 16 8 4 2 1 1)
 
-for (( j=2; j<${#MAX_N_SEGMENTSS[@]}; j++ ))
+for (( j=3; j<${#MAX_N_SEGMENTSS[@]}; j++ ))
 do
 MAX_N_SEGMENTS=${MAX_N_SEGMENTSS[j]} 
 BS=${BSS[j]}
@@ -78,8 +78,8 @@ accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_fine
         --task_dataset $TASK_DATASET \
         --noise_dataset $NOISE_DATASET \
         --babi_path /root/recurrent-memory-transformer-babilong/data/tasks_1-20_v1-2/en-10k \
-        --model_path /root/autodl-tmp/rmt/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd${LR}_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_N_SEGMENTS}-${MAX_N_SEGMENTS}/run_$N \
-        --model_cpt /root/autodl-tmp/rmt/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd${LR}_${SRC_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_SRC_N_SEGMENTS}-${SRC_N_SEGMENTS}/run_$N/model_best \
+        --model_path /root/autodl-tmp/exp_record/babilong/rmt/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_N_SEGMENTS}-${MAX_N_SEGMENTS}/run_$N \
+        --model_cpt /root/autodl-tmp/exp_record/babilong/rmt/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${SRC_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_${SRC_SRC_N_SEGMENTS}-${SRC_N_SEGMENTS}/run_$N/model_best \
         --from_pretrained $MODEL_NAME \
         --model_type $MODEL_TYPE \
         --memory_cell_cls $MEMORY_CELL \
@@ -98,10 +98,10 @@ accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29007 run_fine
         --optimizer AdamW  --weight_decay 0.01 \
         --lr ${LR} --lr_scheduler $SCHEDULER --num_warmup_steps $(($ITERS/10)) \
         --data_n_workers 2 \
-        --log_interval $(($ITERS/100)) --valid_interval $(($ITERS/20)) \
+        --log_interval $(($ITERS/100)) --valid_interval $(($ITERS/100)) \
         --optimize_metric $METRIC --optimize_mode max \
         --show_valid_examples 5 \
-        --early_stopping_patience 15 \
+        --early_stopping_patience 25 \
         --seed $(($N+42)) \
         --clip_grad_norm 1.0
         
