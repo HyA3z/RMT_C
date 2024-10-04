@@ -169,16 +169,22 @@ if __name__ == '__main__':
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.from_pretrained)
 
+
+    max_tokens = 1e6
+    tokenizer.model_max_length = max_tokens
+
     # Prepare datasets
     logger.info(f'preparing dataset for {args.task_dataset}')
     try:
-        noise_dataset = datasets.load_dataset(args.noise_dataset, args.noise_dataset_split)
+        # exit()
+        # noise_dataset = datasets.load_dataset(args.noise_dataset, args.noise_dataset_split)
+        noise_dataset = datasets.load_from_disk('/root/recurrent-memory-transformer-babilong/data/pg19')
         noise_dataset_train = noise_dataset['train']
         noise_dataset_test = noise_dataset['test']
     except ConnectionError:
-        noise_dataset_train = datasets.Dataset.from_file('/home/jovyan/.cache/huggingface/datasets/pg19/default/0.1.0/64837d6fce7251337df051ca74e9a5435d1c9cb7f3033ba257826e44d338f83c/pg19-train.arrow')
-        noise_dataset_test = datasets.Dataset.from_file('/home/jovyan/.cache/huggingface/datasets/pg19/default/0.1.0/64837d6fce7251337df051ca74e9a5435d1c9cb7f3033ba257826e44d338f83c/pg19-test.arrow')
-    
+        noise_dataset_train = datasets.Dataset.from_file('/root/.cache/huggingface/datasets/pg19/default/0.1.0/64837d6fce7251337df051ca74e9a5435d1c9cb7f3033ba257826e44d338f83c/pg19-train.arrow')
+        noise_dataset_test = datasets.Dataset.from_file('/root/.cache/huggingface/datasets/pg19/default/0.1.0/64837d6fce7251337df051ca74e9a5435d1c9cb7f3033ba257826e44d338f83c/pg19-test.arrow')
+        
     # task dataset 
     train_path = os.path.join(args.babi_path, f"{args.task_dataset}_train.txt")
     test_path = os.path.join(args.babi_path, f"{args.task_dataset}_test.txt")
@@ -232,6 +238,7 @@ if __name__ == '__main__':
         input_ids = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token] + b['target_tokens'] + [eos_token]) for b in batch]
         gen_inputs = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token]) for b in batch]
 
+        print(len(input_ids[0]))
         attention_mask = [torch.ones_like(b, dtype=int) for b in input_ids]
         labels_mask = [torch.zeros_like(b, dtype=bool) for b in input_ids]
         for m, t in zip(labels_mask, targets):
