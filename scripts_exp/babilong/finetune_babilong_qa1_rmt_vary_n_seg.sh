@@ -21,8 +21,8 @@ for TASK_DATASET in qa1_single-supporting-fact
 do
 
 ITERS=2000
-TBS=16
-INIT_BS=16
+TBS=32
+INIT_BS=32
 
 for LR in 1e-05
 do
@@ -67,7 +67,7 @@ accelerate launch --config_file $ACCEL_CONFIG --main_process_port 29004 run_fine
         --task_dataset $TASK_DATASET \
         --noise_dataset $NOISE_DATASET \
         --babi_path /root/recurrent-memory-transformer-babilong/data/tasks_1-20_v1-2/en-10k \
-        --model_path /root/autodl-tmp/draft/runs/babilong/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd${LR}_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_0-1/run_$N \
+        --model_path /root/autodl-tmp/exp_record/babilong/rmt/${TASK_DATASET}/$MODEL_NAME/${SCHEDULER}_adamw_wd1e-03_${MAX_N_SEGMENTS}x${SEGMENT_SIZE}_mem${MEMORY_SIZE}_bs${TBS}_bptt-${K2}_from_cpt_0-1/run_$N \
         --from_pretrained $MODEL_NAME \
         --model_type $MODEL_TYPE \
         --memory_cell_cls $MEMORY_CELL \
