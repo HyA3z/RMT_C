@@ -169,7 +169,7 @@ if __name__ == '__main__':
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.from_pretrained)
 
-    max_tokens = 1e4
+    max_tokens = 1e6
     tokenizer.model_max_length = max_tokens
 
     # Prepare datasets
@@ -183,7 +183,7 @@ if __name__ == '__main__':
     except ConnectionError:
         noise_dataset_train = datasets.Dataset.from_file('/root/.cache/huggingface/datasets/pg19/default/0.1.0/64837d6fce7251337df051ca74e9a5435d1c9cb7f3033ba257826e44d338f83c/pg19-train.arrow')
         noise_dataset_test = datasets.Dataset.from_file('/root/.cache/huggingface/datasets/pg19/default/0.1.0/64837d6fce7251337df051ca74e9a5435d1c9cb7f3033ba257826e44d338f83c/pg19-test.arrow')
-        
+    
     # task dataset 
     train_path = os.path.join(args.babi_path, f"{args.task_dataset}_train.txt")
     test_path = os.path.join(args.babi_path, f"{args.task_dataset}_test.txt")
@@ -192,7 +192,16 @@ if __name__ == '__main__':
     task_dataset_test = TaskDataset(test_path, max_n_facts=args.max_n_facts)
 
     # background text
-    qa_margin = 20          # leave space for questions and answers
+    # Option 1 ---> Not add Q at the begining 
+    # qa_margin = 20          # leave space for questions and answers
+
+
+    # Option 2 ---> Add Q at the first seg  |  Assume each question has 5 tokens
+    # qa_margin = 20 + 5 
+
+    # Option 3 ---> Add Q at the all seg
+    qa_margin = 20 + (args.max_n_segments - 1) * 5
+
     if args.vary_n_segments:  # choose sample sizes according to each number of segments up to args.max_n_segments
         # train_sample_size = [int(args.sample_size / i) for i in range(1, args.max_n_segments + 1)]
         train_sample_size = [int(args.segment_size * i) for i in range(1, args.max_n_segments)] + [args.sample_size]
@@ -232,10 +241,41 @@ if __name__ == '__main__':
     gen_token = tokenizer.encode('GEN')[0]
     eos_token = tokenizer.eos_token_id
 
+    # # Get question tokenizer
+    # que_token = tokenizer.encode('QUEST')[0]
+
     def collate_fn(batch):
         targets = [torch.tensor(b['target_tokens']) for b in batch]
-        input_ids = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token] + b['target_tokens'] + [eos_token]) for b in batch]
-        gen_inputs = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token]) for b in batch]
+        # Option 1 --> Add question at the begining of sentences
+        # input_ids = [torch.tensor(b['question_tokens'] + b['input_tokens'] + b['question_tokens'] + [gen_token] + b['target_tokens'] + [eos_token]) for b in batch]
+        # gen_inputs = [torch.tensor(b['question_tokens'] + b['input_tokens'] + b['question_tokens'] + [gen_token]) for b in batch]
+
+        # Option 2 --> Not add question at the begining of sentences  
+        # input_ids = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token] + b['target_tokens'] + [eos_token]) for b in batch]
+        # gen_inputs = [torch.tensor(b['input_tokens'] + b['question_tokens'] + [gen_token]) for b in batch]
+
+        # Option 3 --> Add question to each segment
+        input_ids, gen_inputs = [], []
+        for b in batch:
+            question_len = len(b['question_tokens'])
+            add_len = args.segment_size - question_len
+            template_list = []
+
+            # print(len(b['input_tokens']))
+            for i in range(args.max_n_segments-1):
+                # print(i*args.segment_size-question_len)
+                # print(i)
+                template_list += b['question_tokens']
+                template_list += b['input_tokens'][i*add_len:(i+1)*add_len]
+            
+            template_list += b['input_tokens'][(args.max_n_segments-1)*add_len:]
+            input_ids.append(torch.tensor(template_list + b['question_tokens'] + [gen_token] + b['target_tokens'] + [eos_token]))
+            gen_inputs.append(torch.tensor(template_list + b['question_tokens'] + [gen_token]))
+
+        
+        # torch.set_printoptions(threshold=torch.inf)
+        # print(len(input_ids[0]))
+        # exit()
 
         attention_mask = [torch.ones_like(b, dtype=int) for b in input_ids]
         labels_mask = [torch.zeros_like(b, dtype=bool) for b in input_ids]
@@ -258,6 +298,7 @@ if __name__ == '__main__':
 
     # train_dataset, valid_dataset, test_dataset = dataset["train"], dataset["validation"], dataset["test"]
     kwargs = {'pin_memory': True, 'num_workers': args.data_n_workers, 'collate_fn': collate_fn}
+
     per_worker_batch_size = args.batch_size * args.gradient_accumulation_steps
     train_sampler = DistributedSampler(train_dataset, rank=accelerator.process_index,
                                        num_replicas=accelerator.num_processes, shuffle=True, drop_last=True,
@@ -328,26 +369,119 @@ if __name__ == '__main__':
         memory_cell_cls = get_cls_by_name(args.memory_cell_cls)
         recurrent_wrapper_cls = get_cls_by_name(args.recurrent_wrapper_cls)
         logger.info(f'Wrapping in: {memory_cell_cls} and {recurrent_wrapper_cls}')
-        
+
         # -------------------------------------------------------------------------------------
         # Define compress module 
-        from transformers import GPT2Config, AutoModel, GPT2Model
         from torch import nn
+        from transformers import GPT2Config, AutoModel, GPT2Model
+        from transformers.models.gpt2.modeling_gpt2 import GPT2MLP
+        
+        # Option 1 ----> Use different model
         config = GPT2Config(
             n_layer=4,
         )
-        # compress_module = GPT2Model(config)
-        compress_module = GPT2Model.from_pretrained('gpt2', config=config, ignore_mismatched_sizes=True)
-        model_size = sum(t.numel() for t in compress_module.parameters())
-        print(f"Compress_module size: {model_size/1000**2 - 50257 * 768/1000**2:.1f}M parameters")
+
+        compress_module = GPT2Model.from_pretrained('gpt2', config=config)  # From pretrained 
+        # compress_module = GPT2Model(config)  # From scratch
+
+        # # Option 2 ----> Use gpt2 first 4 layer as compress module
+        # from transformers import GPT2PreTrainedModel
+        # from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
+        # class CompressModule(GPT2PreTrainedModel):
+        #     def __init__(self, original_model):
+        #         super().__init__(original_model.config)
+
+        #         self.wte = original_model.transformer.wte
+        #         self.wpe = original_model.transformer.wpe
+        #         self.drop = original_model.transformer.drop
+                
+        #         # 共享前4个层
+        #         self.h = nn.ModuleList(original_model.transformer.h[:4])  
+        #         self.ln_f = original_model.transformer.ln_f
+                
+
+        #     def forward(self, input_ids=None, inputs_embeds=None, output_hidden_states=None, past_key_values=None, attention_mask=None, layer_past=None, position_ids=None, **kwargs):
+        #         if input_ids is not None:
+        #             input_shape = input_ids.size()
+        #             input_ids = input_ids.view(-1, input_shape[-1])
+        #             batch_size = input_ids.shape[0]
+        #         elif inputs_embeds is not None:
+        #             input_shape = inputs_embeds.size()[:-1]
+        #             batch_size = inputs_embeds.shape[0]
+
+        #         if past_key_values is None:
+        #             past_length = 0
+        #             past_key_values = tuple([None] * len(self.h))
+
+        #         device = input_ids.device if input_ids is not None else inputs_embeds.device
+                
+        #         if position_ids is None:
+        #             position_ids = torch.arange(0, input_shape[-1], dtype=torch.long, device=device)
+        #             position_ids = position_ids.unsqueeze(0)
+
+        #         if inputs_embeds is None:
+        #             inputs_embeds = self.wte(input_ids)
+
+        #         position_embeds = self.wpe(position_ids)
+        #         hidden_states = inputs_embeds + position_embeds
+        #         attention_mask = attention_mask.view(batch_size, -1) if attention_mask is not None else None
+
+        #         if attention_mask is not None:
+        #             attention_mask = attention_mask[:, None, None, :]
+        #             attention_mask = attention_mask.to(dtype=self.dtype)
+        #             attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+
+        #         hidden_states = self.drop(hidden_states)
+                
+        #         all_hidden_states = () if output_hidden_states else None
+        #         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
+        #             if output_hidden_states:
+        #                 all_hidden_states = all_hidden_states + (hidden_states,)
+
+        #             outputs = block(hidden_states, layer_past=layer_past, attention_mask=attention_mask)
+
+        #         # print(len(outputs))
+        #         hidden_states = outputs[0]
+                
+        #         hidden_states = self.ln_f(hidden_states)
+
+        #         if output_hidden_states:
+        #             all_hidden_states = all_hidden_states + (hidden_states,)
+
+        #         return BaseModelOutputWithPastAndCrossAttentions(
+        #             last_hidden_state=hidden_states,
+        #             hidden_states=all_hidden_states,
+        #         )
+
+        # compress_module = CompressModule(model)
+
+        # # Define hidden size and inner dim
+        # hidden_size = config.hidden_size    
+        # inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
+        # transit_module = GPT2MLP(inner_dim, config)
+       # -------------------------------------------------------------------------
 
         # Frozen compress_module wte and GPT-2
         compress_module.wte.requires_grad_(False) # Let compress module use same wte with main model
-        # for param in model.parameters():
-        #     param.requires_grad_(False)
+        for name, param in model.named_parameters():
+            param.requires_grad_(False)
         
-        # -----------------------------------------------------------------------------------------------
 
+        # for name, param in compress_module.named_parameters():
+        #     if 'wte' not in name and 'wpe' not in name and 'ln_f.weight' not in name and 'ln_f.bias' not in name:
+        #         param.requires_grad_(True)
+
+        print('-------------------Base_Model-------------------------------------')
+        for name, param in model.named_parameters():
+            if param.requires_grad == True:
+                print(f"Parameter name: {name}, requires_grad: {param.requires_grad}")
+
+        print('-------------------Compress_Module-------------------------------------')
+        for name, param in compress_module.named_parameters():
+            if param.requires_grad == True:
+                print(f"Parameter name: {name}, requires_grad: {param.requires_grad}")
+
+        # -----------------------------------------------------------------------------------------------------------------------
         cell = memory_cell_cls(model, args.num_mem_tokens, compress_module)
         if args.segment_alignment not in {None, 'left'}:
             logger.info(f"Using custom segment alignment: {args.segment_alignment}")
@@ -361,10 +495,7 @@ if __name__ == '__main__':
                                       segment_alignment=args.segment_alignment,
                                       k2=args.k2,
         )
-        # print(model)
-        # print(model.memory_cell.model.transformer.wte.weight)
-        # print(model.memory_cell.model.transformer.h[0].attn.c_attn.weight)
-        # print(model.memory_cell.compress_module.h[0].attn.c_attn.weight)
+                                    
 
         ## load cpt of rmt
         if args.model_cpt:
@@ -373,33 +504,10 @@ if __name__ == '__main__':
             model.load_state_dict(cpt, strict=False)
             logger.info(f'Loaded RMT state dict from: {args.model_cpt}')
         
-        # ---------------------------------------------------------------------------------------------
-        def copy(source_model, target_model, num_layers):
-            # Get parameter names for the source model
-            source_params = {name: param for name, param in source_model.named_parameters()}
-            
-            # Iterate through layers
-            for i in range(num_layers):
-                source_block = source_model.h[i]
-                target_block = target_model.h[i]
-                
-                # Iterate through parameters of the current block
-                for name, param in target_block.named_parameters():
-                    # Construct the name of the corresponding parameter in the source model
-                    source_name = f"h.{i}.{name}"
-                    
-                    if source_name in source_params:
-                        # Copy data from source to target
-                        param.data.copy_(source_params[source_name].data)
-
-        source_model = model.memory_cell.model.transformer
-        target_model = model.memory_cell.compress_module
-        copy(source_model, target_model, 4)
-
-        # print(model.memory_cell.model.transformer.wte.weight)
-        # print(model.memory_cell.model.transformer.h[0].attn.c_attn.weight)
-        # print(model.memory_cell.compress_module.h[0].attn.c_attn.weight)
-        # exit()   
+        # # Copy index
+        # copy_idx = [0, 3, 7, 11]
+        # for i in range(len(copy_idx)):
+        #     model.memory_cell.compress_module.h[i].load_state_dict(model.memory_cell.model.transformer.h[copy_idx[i]].state_dict())
 
     if args.freeze_model_weights:
         for n, p in model.named_parameters():
@@ -432,14 +540,30 @@ if __name__ == '__main__':
     def keep_for_metrics_fn(batch, output):
         # select data from batch and model output that would be used to compute metrics
         data = {}
-        data['labels'] = batch['labels']
         data['loss'] = output['loss']
-        data['target_text'] = batch['target_text']
-        if 'logits' in output:
-            data['predictions'] = torch.argmax(output['logits'].detach(), dim=-1)
-            data['predicted_labels'] = [p[m] for p, m in zip(data['predictions'], batch['labels_mask'])]
         if 'generation_outputs' in output:
-            data['generation_outputs'] = output['generation_outputs']
+            generation_outputs = tokenizer.batch_decode(output['generation_outputs'][:, 1:], add_special_tokens=False)
+
+            for i, o in enumerate(generation_outputs):
+                if '<|endoftext|>' in o:
+                    generation_outputs[i] = o.split('<|endoftext|>')[0].strip()
+
+            num_correct = np.sum([text == pred for text, pred in zip (batch['target_text'], generation_outputs)])
+            num_total = len(generation_outputs)
+            data['num_correct'] = [num_correct]            
+            data['num_total'] = [num_total]
+        elif 'logits' in output:
+            data['predictions'] = torch.argmax(output['logits'].detach(), dim=-1)
+            predicted_labels = [p[m[-len(p):]] for p, m in zip(data['predictions'], batch['labels_mask'])]
+            predicted_labels = tokenizer.batch_decode(predicted_labels, add_special_tokens=False)
+            for i, l in enumerate(predicted_labels):
+                if '<|endoftext|>' in l:
+                    eos_ind = predicted_labels[i].index('<|endoftext|>')
+                    predicted_labels[i] = predicted_labels[i][:eos_ind]
+
+            data['num_correct'] = [np.sum([text == pred for text, pred in zip (batch['target_text'], predicted_labels)])]
+            data['num_total'] = [len(predicted_labels)]
+            
         return data
 
     # HF datasets can compute metrics on each gpu process and then aggregate them on process with rank 0
@@ -461,33 +585,8 @@ if __name__ == '__main__':
     def metrics_fn(data):
         # compute metrics based on stored labels, predictions, ...
         metrics = {}
-        if 'generation_outputs' in data:
-            generation_outputs = tokenizer.batch_decode([d for d in data['generation_outputs']], add_special_tokens=False)
-            for i, o in enumerate(generation_outputs):
-                if '<|endoftext|>' in o:
-                    # print(f"gt: {data['target_text'][i]}, generated {o}")
-                    generation_outputs[i] = o.split('<|endoftext|>')[1].strip()
-
-            metrics['exact_match'] = np.mean([text == pred for text, pred in zip (data['target_text'], generation_outputs)])
-
-        elif 'predictions' in data:
-            y, p = data['labels'], data['predictions']
-            predicted_labels = tokenizer.batch_decode(data['predicted_labels'], add_special_tokens=False)
-            for i, l in enumerate(predicted_labels):
-                if '<|endoftext|>' in l:
-                    eos_ind = predicted_labels[i].index('<|endoftext|>')
-                    predicted_labels[i] = predicted_labels[i][:eos_ind]
-                    
-            metrics['exact_match'] = np.mean([text == pred for text, pred in zip (data['target_text'], predicted_labels)])
-            if args.show_valid_examples > 0:
-                for i in range(min(args.show_valid_examples, len(y))):
-                    logger.info(f'y: {y[i][-50:]}')
-                    logger.info(f'p: {p[i][-50:]}')
-
-                    logger.info(f"y_text: {data['target_text'][i]}")
-                    logger.info(f"p_text: {predicted_labels[i]}")
-
-                    logger.info('-' * 50)
+        if 'num_correct' in data:
+            metrics['exact_match'] = np.sum(data['num_correct']) / np.sum(data['num_total'])
         try:
             perplexity = math.exp(data["loss"].mean())
         except OverflowError:
