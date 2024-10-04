@@ -102,7 +102,7 @@ class SentenceSampler:
                 # 1) - updating list while iterating over it, 2) - don't like updating it on every step
                 #self.sentences = self.sentences[1:]
                 if total_len >= sample_size:
-                    self.sentences = self.sentences[i+1:]
+                    self.sentences = self.sentences[i+1:] # remove the i item
                     cutoff = total_len - sample_size
                     if cutoff > 0:
                         sample[-1] = sample[-1][:-cutoff]
@@ -120,7 +120,7 @@ class SentenceSampler:
                     continue
                 text = text[self.gen.choice(len(text)):] # start from random position in text
                 text = text[:sample_size * 10]          # cut too long texts to speed up tokenization
-            sentences += self.sentence_tokenizer.tokenize(text)
+            sentences += self.sentence_tokenizer.tokenize(text) # "Hello world. This is an example text! How are you doing today? I hope everything is going well." --> ['Hello world.','This is an example text! How are you doing today?'...]
             if self.shuffle:
                 sentences = sentences[1:-1]
         self.sentences += sentences
@@ -128,7 +128,7 @@ class SentenceSampler:
     def next_sample_(self):
         if self.shuffle:
             self.total_tokens = 0
-            sample_ind = self.gen.choice(len(self.dataset))
+            sample_ind = self.gen.choice(len(self.dataset))  # random select sentence from dataset
             sample = self.dataset[int(sample_ind)]['text']
         else:
             sample = self.dataset[int(self.sample_ind)]['text']
@@ -170,14 +170,14 @@ class NoiseInjectionDataset(Dataset):
         question_tok = self.tokenizer(sample['question'])['input_ids']
         answer_tok = self.tokenizer(sample['answer'])['input_ids']
 
-        sample_size = self.get_sample_size()
-        task_len = sum_lengths(facts_tok)
+        sample_size = self.get_sample_size() # total_len - QA_margin
+        task_len = sum_lengths(facts_tok) # num of facts
         background_text_len = sample_size - task_len
-        background_text = self.noise_sampler.get_sample(background_text_len)
+        background_text = self.noise_sampler.get_sample(background_text_len) # list of noise(each item is one sentence) --> total_len = background_text_len
         sample['background_text'] = background_text
-
+    
         if self.task_start_pct is None and self.task_end_pct is None:     # if fact position unspecified
-            possible_positions = range(len(background_text) + 1) 
+            possible_positions = range(len(background_text) + 1)  
         else:
             task_start_ind = int(sample_size * self.task_start_pct)
             task_end_ind = int(sample_size * self.task_end_pct)
@@ -194,20 +194,20 @@ class NoiseInjectionDataset(Dataset):
                 raise IndexError(f"Unable to insert facts in specified place: {self.task_start_pct, self.task_end_pct}. \
                                  Total fact length: {total_facts_len}, sentences length: {[len(t) for t in background_text]}. Make the range wider or increase the sample size.")
             
-        fact_positions = self.gen.choice(possible_positions, len(facts_tok))
+        fact_positions = self.gen.choice(possible_positions, len(facts_tok)) # Example gen.choice(10,2) ---> array([4, 8], dtype=int64)
         fact_positions.sort()
         sample['fact_positions'] = fact_positions                  # positions of facts between noise sentences
 
-        updated_sample = [[] for _ in range(len(background_text) + 1)] 
+        updated_sample = [[] for _ in range(len(background_text) + 1)] # [[], [], [] ..............]  len is n + 1
         for fact, pos in zip(facts_tok, fact_positions):
-            updated_sample[pos].append(fact)
+            updated_sample[pos].append(fact)              #[[], [fact_1], [], [], [], [fact_2]...........................]
 
         for i, s in enumerate(background_text):
-            updated_sample[i].append(s)
+            updated_sample[i].append(s)                 # append the background_text to the list --- > [[noise_1], [fact_1 + noise_2]..........................]
 
-        flat = [i for s in updated_sample for i in s]
+        flat = [i for s in updated_sample for i in s] # Only contain the facts
         tokens = [i for s in flat for i in s]
-
+        
         sample['input_tokens'] = tokens
         sample['question_tokens'] = question_tok
         sample['target_tokens'] = answer_tok
